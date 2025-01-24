@@ -1,0 +1,70 @@
+---
+title: "Checking for Moderators in Linear Mixed Effects Models with Longitudinal Data"
+output: html_document
+date: "2025-01-24"
+---
+
+# Load packages
+```{r}
+library(tidyverse)
+library(broom.mixed)
+library(lmerTest)
+library(emmeans)
+```
+
+
+# View example dataset
+```{r}
+head(sleepstudy)
+```
+
+# Assign treatment groups and moderator
+```{r}
+sleepstudy <- sleepstudy %>% 
+  filter(Days <= 1) %>% 
+  mutate(treatment = case_when(
+    as.numeric(Subject) < 10 ~ 0, 
+    as.numeric(Subject) >= 10 ~ 1,
+    TRUE ~ NA
+  ),
+  sex = as.factor(case_when(
+    as.numeric(Subject) %% 2 == 0 ~ "Male",
+    TRUE ~ "Female"
+  )),
+  Days = as.factor(Days))
+```
+
+
+# Fit overall model - interaction between time * treatment
+```{r}
+m1 <- lmer(Reaction ~ treatment * Days + (1|Subject), data = sleepstudy)
+```
+
+
+# Get time * treatment effect estimate, 95% CI, p-value
+```{r}
+m1_summary <- tidy(m1, conf.int = TRUE) 
+
+m1_summary
+```
+
+# Check for moderation by sex (screen for significant 3-way interaction)
+```{r}
+m2 <- lmer(Reaction ~ treatment * Days * sex + (1|Subject), data = sleepstudy)
+```
+
+
+# Get time * treatment * sex effect estimate, 95% CI, p-value
+```{r}
+m2_summary <- tidy(m2, conf.int = TRUE) 
+
+m2_summary
+```
+
+# If p-value significant, then move on to post-hoc estimation of effects by group
+```{r}
+emmeans(m2, specs = c("treatment", "Days", "sex")) %>% 
+  contrast(interaction = "consec", by = "sex") %>% 
+  tidy()
+```
+
