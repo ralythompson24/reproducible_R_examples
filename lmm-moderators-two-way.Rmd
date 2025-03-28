@@ -1,0 +1,56 @@
+---
+title: "Checking for Moderators in Linear Mixed Effects Models"
+output: html_document
+date: "2025-03-28"
+---
+
+# Load packages
+```{r}
+library(tidyverse)
+library(broom.mixed)
+library(lmerTest)
+library(emmeans)
+```
+
+# View example dataset
+```{r}
+glimpse(carrots)
+```
+
+# Fit overall model with exposure = sweetness and outcome = preference including random effect for consumer
+```{r}
+m1 <- lmer(Preference ~ Sweetness + (1|Consumer), data = carrots)
+```
+
+
+# Get effect (beta) of sweetness on preference, 95% CI, p-value
+```{r}
+m1_summary <- tidy(m1, conf.int = TRUE) 
+
+m1_summary
+```
+
+# Check for moderation by Gender (screen for significant 2-way interaction)
+```{r}
+m2 <- lmer(Preference ~ Sweetness * Gender + (1|Consumer), data = carrots)
+```
+
+
+# Check for statistical interaction (Gender * Sweetness), 95% CI, p-value
+```{r}
+m2_summary <- tidy(m2, conf.int = TRUE) 
+
+m2_summary
+```
+
+# Post-hoc estimation of effects of sweetness on preference by Gender
+```{r}
+# Use this to get betas for Sweetness across Genders
+# First argument is a fitted model object
+# specs= the name of a variable across whose levels betas will be estimeated
+# var= the variable whose betas we want to estimate
+emtrends(m2, specs = "Gender", var = "Sweetness") %>% 
+  tidy(conf.int = TRUE)
+```
+# For more info, see this workshop: https://stats.oarc.ucla.edu/wp-content/uploads/2023/03/interactions_r.html#(1)
+
