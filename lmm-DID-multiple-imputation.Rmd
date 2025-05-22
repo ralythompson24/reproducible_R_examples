@@ -1,0 +1,180 @@
+---
+title: Performing DID using linear mixed effects models applied to multiply imputed
+  data
+output: html_document
+date: "2025-05-22"
+---
+
+```{r}
+library(tidyverse)
+library(emmeans) 
+library(mice)
+library(ggmice)
+library(broom.mixed)
+library(lme4)
+library(collapse)
+```
+
+# Simulate dataset with characteristics we need
+```{r}
+sim_data <- tibble(
+  subject = c(1:100),
+  group = rep(c(1,0), each = 50),
+  score_t1 = runif(100, min = 0, max = 100),
+  sex = sample(c("M", "F"), 100, replace = TRUE),
+  age = sample(18:65, 100, replace = TRUE),
+  race = sample(c("white", "black", "other"), 100, replace = TRUE)
+)
+
+sim_data <- sim_data %>% 
+  # Generate score_t2 for each group
+  mutate(score_t2 = case_when(
+    group == 1 ~ score_t1 + sample(0:10, n(), replace = TRUE),
+    group == 0 ~ score_t1 - sample(0:5, n(), replace = TRUE)
+  ),
+  # Introduce some random missing values for score_t2
+  score_t2 = case_when(
+    runif(n()) < 0.15 ~ NA_real_, TRUE ~ score_t2
+  ))
+```
+
+# Reformat the data for multiple imputation, character variables must be factors
+```{r}
+sim_data_to_impute <- sim_data %>% 
+  mutate(sex = as.factor(sex),
+         race = as.factor(race))
+```
+
+# Convert data to long
+```{r}
+sim_data_to_impute_long <- sim_data_to_impute %>% 
+  pivot_longer(cols = c("score_t1", "score_t2"), names_to = "time", values_to = "score", names_prefix = "score_") %>% 
+  mutate(time = as.factor(time))
+```
+
+# Define the longitudinal multiple imputation model
+```{r}
+imp0 <- mice(sim_data_to_impute_long, maxit=0)
+meth <- imp0$method
+predM <- imp0$predictorMatrix
+
+# Define score as requiring a longitudinal/time-dependent predictive model
+meth["score"] <- "2l.norm"
+
+# In predictor matrix, set subject variable to -2 to treat as grouping variable, and time as 2 for a random effect/repeated measure
+predM[, "subject"] <- -2
+predM[, "time"] <- 2
+```
+
+
+# Check the predictor matrix
+```{r}
+predM
+```
+# Confirm that the predictive model looks appropriate based on the data type
+```{r}
+meth
+```
+# Now let's impute!
+```{r}
+imp <- mice(sim_data_to_impute_long, m = 5, seed = 111111, print = TRUE,
+            predictorMatrix = predM, method = meth)
+```
+
+# Check for logged events
+```{r}
+imp$loggedEvents
+```
+
+# Check for convergence
+```{r}
+plot(imp)
+```
+
+# Summarize the imputation data for visualizations, etc.
+```{r}
+imp_data_long <- complete(imp, "long", include = FALSE)
+
+num_summary <- imp_data_long %>% 
+  dplyr::select(subject, time, where(is.numeric)) %>% 
+  group_by(subject, time) %>% 
+  summarise_all(mean)
+
+fct_summary <- imp_data_long %>% 
+  dplyr::select(subject, time, where(is.factor)) %>% 
+  group_by(subject, time) %>% 
+  summarise_all(fmode)
+
+imp_summary <- num_summary %>% 
+  full_join(fct_summary, by = c("subject", "time"))
+```
+
+# Check t1 and t2 distributions of score, averaged across all imputations
+```{r}
+imp_summary %>% 
+  ggplot(mapping = aes(x = score)) +
+  geom_histogram(bins = 15) +
+  facet_grid(rows = vars(group), cols = vars(time))
+```
+
+# Unadjusted means and DID estimate
+```{r}
+fit <- with(data = imp,
+            exp = lmer(score ~ group * time + (1|subject)))
+
+m1 <- pool(fit)
+
+as.data.frame(summary(m1, conf.int = TRUE))
+```
+
+# Within-group change (post-pre)
+```{r}
+emmeans(fit, specs = c("group", "time"), adjust = "none") %>% 
+  pairs(reverse = TRUE, adjust = "none") %>% 
+  confint() %>% 
+  filter(contrast %in% c("group0 t2 - group0 t1", "group1 t2 - group1 t1")) %>% 
+  as_tibble()
+```
+
+# Group means
+```{r}
+emmeans(fit, specs = c("group", "time"))
+```
+# Adjusted DID estimate
+```{r}
+fit_adj <- with(data = imp,
+                exp = lmer(score ~ group * time +
+                             age + sex + race + (1|subject)))
+
+m1_adj = pool(fit_adj)
+
+as.data.frame(summary(m1_adj, conf.int = TRUE))
+```
+
+# Plot results
+```{r}
+# Estimated means and standard error for each group and time
+m1_means <- tidy(emmeans(fit, specs = c("group", "time"))) %>% 
+  dplyr::select(group, time, estimate, std.error)
+
+m1_plot_data <- m1_means %>% 
+  mutate(group = factor(case_when(
+    group == 1 ~ "Intervention",
+    group == 0 ~ "Control"
+  ), levels = c("Intervention", "Control")),
+    lower = estimate + (-1.96 * std.error),
+    upper = estimate + (1.96 * std.error))
+
+m1_plot <- m1_plot_data %>% 
+  ggplot(mapping = aes(x = time, y = estimate, color = group)) +
+  geom_line(aes(group = group), linewidth = 1.5, linetype = "solid") +
+  geom_pointrange(aes(ymin = lower, ymax = upper), fatten = 10, linewidth = 1.5) +
+  theme_bw() +
+  labs(y = "Mean Score",
+       x = "Time",
+       color = "Treatment Group") + 
+  ylim(0, 65)
+
+m1_plot
+```
+
